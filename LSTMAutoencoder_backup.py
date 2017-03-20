@@ -1,7 +1,6 @@
 
 import tensorflow as tf
 from tensorflow.contrib.rnn.python.ops.core_rnn_cell_impl import LSTMCell
-import tensorflow.contrib.rnn.python.ops import rnn
 
 import numpy as np
 
@@ -38,8 +37,10 @@ class LSTMAutoencoder(object):
     self.elem_num = inputs[0].get_shape().as_list()[1]
 
     if cell is None:
-      self._enc_cell = LSTMCell(hidden_num)
-      self._dec_cell = LSTMCell(hidden_num)
+      with tf.variable_scope('encoder'):
+        self._enc_cell = LSTMCell(hidden_num)
+      with tf.variable_scope('decoder'):
+        self._dec_cell = LSTMCell(hidden_num)
     else :
       self._enc_cell = cell
       self._dec_cell = cell
@@ -47,10 +48,12 @@ class LSTMAutoencoder(object):
     if initialize == True:
       self.enc_state = self._enc_cell.zero_state(self.batch_num, dtype = tf.float32)
       initialize = False
-    with tf.variable_scope('encoder'):
-      #self.z_codes, self.enc_state = tf.nn.rnn(
-        #self._enc_cell, inputs, dtype=tf.float32)
-      self.z_codes, self.enc_state = self._enc_cell(inputs[time_step], self.enc_state)
+    with tf.variable_scope('encoder') as vs_enc:
+      for time_step in range (len(inputs)):
+        #self.z_codes, self.enc_state = tf.nn.rnn(
+          #self._enc_cell, inputs, dtype=tf.float32)
+        if time_step > 0: vs_enc.reuse_variables()
+        (self.z_codes, self.enc_state) = self._enc_cell(inputs[time_step], self.enc_state)
     with tf.variable_scope('decoder') as vs:
       dec_weight_ = tf.Variable(
         tf.truncated_normal([hidden_num, self.elem_num], dtype=tf.float32),
@@ -65,19 +68,23 @@ class LSTMAutoencoder(object):
         #dec_outputs, dec_state = tf.nn.rnn(
           #self._dec_cell, dec_inputs, 
           #initial_state=self.enc_state, dtype=tf.float32)
-        dec_outputs, dec_state = self._dec_cell(dec_inputs[time_step], self.enc_state)
-        """the shape of each tensor
-          dec_output_ : (step_num x hidden_num)
-          dec_weight_ : (hidden_num x elem_num)
-          dec_bias_ : (elem_num)
-          output_ : (step_num x elem_num)
-          input_ : (step_num x elem_num)
-        """
+        dec_outputs = []
+        for time_step in range(len(inputs)):
+          if time_step > 0: vs.reuse_variables()
+          dec_output, dec_state = self._dec_cell(dec_inputs[time_step], self.enc_state)
+          dec_outputs.append(dec_output)
+          """the shape of each tensor
+            dec_output_ : (step_num x hidden_num)
+            dec_weight_ : (hidden_num x elem_num)
+            dec_bias_ : (elem_num)
+            output_ : (step_num x elem_num)
+            input_ : (step_num x elem_num)
+          """
         if reverse:
           dec_outputs = dec_outputs[::-1]
-        dec_output_ = tf.transpose(tf.pack(dec_outputs), [1,0,2])
+        dec_output_ = tf.transpose(tf.stack(dec_outputs), [1,0,2])
         dec_weight_ = tf.tile(tf.expand_dims(dec_weight_, 0), [self.batch_num,1,1])
-        self.output_ = tf.batch_matmul(dec_output_, dec_weight_) + dec_bias_
+        self.output_ = tf.matmul(dec_output_, dec_weight_) + dec_bias_
 
       else : 
         dec_state = self.enc_state
@@ -90,9 +97,9 @@ class LSTMAutoencoder(object):
           dec_outputs.append(dec_input_)
         if reverse:
           dec_outputs = dec_outputs[::-1]
-        self.output_ = tf.transpose(tf.pack(dec_outputs), [1,0,2])
+        self.output_ = tf.transpose(tf.stack(dec_outputs), [1,0,2])
 
-    self.input_ = tf.transpose(tf.pack(inputs), [1,0,2])
+    self.input_ = tf.transpose(tf.stack(inputs), [1,0,2])
     self.loss = tf.reduce_mean(tf.square(self.input_ - self.output_))
 
     if optimizer is None :
